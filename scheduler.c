@@ -4,9 +4,6 @@
 #include <semaphore.h>
 #include <stdbool.h>
 #define QUEUE_MAX_SIZE 3
-#define RELEASE_TIME_P1 0
-#define RELEASE_TIME_P2 2
-#define RELEASE_TIME_P3 5
 
 typedef struct
 {
@@ -49,6 +46,7 @@ typedef struct
 {
     char resource[25];
     bool busy;
+    Queue blocked_queue;
 } Semaphore;
 
 Queue general_blocked_queue = {.front = -1, .rear = -1, .count = 0};
@@ -60,8 +58,10 @@ void display_queue(Queue q);
 void dequeue_pid(Queue *q, int pid);
 void print_pcb(PCB p);
 char *readFromFile(char *filename);
+int get_highest_priority_process(Queue *q);
 
 // global variables
+int RELEASE_TIME_P1, RELEASE_TIME_P2, RELEASE_TIME_P3;
 MemoryWord main_memory[60];
 struct MLQ MLQ = {
     {.front = -1, .rear = -1, .count = 0},
@@ -129,29 +129,25 @@ void change_pcb_pc(int pid, int new_pc)
     }
 }
 
-bool blocked_on_semaphore(int pid, Semaphore s)
-{
-    PCB p = get_pcb_by_pid(pid);
-    // get the resource name of the semaphore
-    char current_instruction[25];
-    strcpy(current_instruction, main_memory[p.pc + p.mem_start - 1].data);
-    char *token = strtok(current_instruction, " ");
-    char *resource_name = strtok(NULL, " ");
-    if (strcmp(resource_name, s.resource) == 0)
-    {
-        return true;
-    }
-    return false;
-}
-
 void initializeSemaphores()
 {
     strcpy(userInput.resource, "userInput");
     userInput.busy = 0;
+    userInput.blocked_queue.front = -1;
+    userInput.blocked_queue.rear = -1;
+    userInput.blocked_queue.count = 0;
+
     strcpy(userOutput.resource, "userOutput");
     userOutput.busy = 0;
+    userOutput.blocked_queue.front = -1;
+    userOutput.blocked_queue.rear = -1;
+    userOutput.blocked_queue.count = 0;
+
     strcpy(file.resource, "file");
     file.busy = 0;
+    file.blocked_queue.front = -1;
+    file.blocked_queue.rear = -1;
+    file.blocked_queue.count = 0;
 }
 
 void _sem_wait(Semaphore *s, int pid)
@@ -161,7 +157,9 @@ void _sem_wait(Semaphore *s, int pid)
         // set the process state to blocked
         change_pcb_state(pid, BLOCKED);
         // enqueue the process in the general blocked queue
-        enqueue(&general_blocked_queue, pid);
+        enqueue((&general_blocked_queue), pid);
+        // enqueue the process in the semaphore's blocked queue
+        enqueue(&(*s).blocked_queue, pid);
     }
     else
     {
@@ -171,46 +169,37 @@ void _sem_wait(Semaphore *s, int pid)
 
 void _sem_signal(Semaphore *s)
 {
-    (*s).busy = false;
-    // check if there are any processes in the general blocked queue blocked on this semaphore's resource
-    int highest_priority = 5;
-    int highest_priority_pid = -1;
-    for (int i = 0; i < general_blocked_queue.count; i++)
+    
+    if ((*s).blocked_queue.count > 0)
     {
-        int pid = dequeue(&general_blocked_queue);
-        enqueue(&general_blocked_queue, pid);
-        if (blocked_on_semaphore(pid, *s))
-        {
-            PCB pcb = get_pcb_by_pid(pid);
-            if (pcb.priority < highest_priority)
-            {
-                highest_priority = pcb.priority;
-                highest_priority_pid = pid;
-            }
-        }
-    }
-    if (highest_priority_pid != -1)
-    {
+        int pid = get_highest_priority_process(&(*s).blocked_queue);
         // remove from general blocked queue
-        dequeue_pid(&general_blocked_queue, highest_priority_pid);
+        dequeue_pid(&general_blocked_queue, pid);
+        // remove from semaphore blocked queue
+        dequeue_pid(&(*s).blocked_queue, pid);
         // change the state of the process to ready
-        change_pcb_state(highest_priority_pid, READY);
+        change_pcb_state(pid, READY);
         // enqueue the process in the ready queue according to its priority
-        switch (highest_priority)
+        PCB pcb = get_pcb_by_pid(pid);
+        switch (pcb.priority)
         {
         case 1:
-            enqueue(&MLQ.q1, highest_priority_pid);
+            enqueue(&MLQ.q1, pid);
             break;
         case 2:
-            enqueue(&MLQ.q2, highest_priority_pid);
+            enqueue(&MLQ.q2, pid);
             break;
         case 3:
-            enqueue(&MLQ.q3, highest_priority_pid);
+            enqueue(&MLQ.q3, pid);
             break;
         case 4:
-            enqueue(&MLQ.q4, highest_priority_pid);
+            enqueue(&MLQ.q4, pid);
             break;
         }
+        (*s).busy = true;
+    }
+    else{
+        (*s).busy = false;
     }
 }
 
@@ -300,8 +289,29 @@ void increment_clk()
     display_queue(MLQ.q3);
     printf("Q4: ");
     display_queue(MLQ.q4);
-    printf("Q_BLOCKED: ");
+
+    printf("\ngeneral_blocked_queue: ");
     display_queue(general_blocked_queue);
+    // print semaphore blocked queues
+    printf("userInput_blocked_queue: ");
+    display_queue(userInput.blocked_queue);
+    printf("userOutput_blocked_queue: ");
+    display_queue(userOutput.blocked_queue);
+    printf("file_blocked_queue: ");
+    display_queue(file.blocked_queue);
+    // print state of each process pid 1 2 3
+    printf("\npid 1 {");
+    printf("state: %d, priority: %d}\n", get_pcb_by_pid(1).state, get_pcb_by_pid(1).priority);
+    if (clock_cycle >= RELEASE_TIME_P2)
+    {
+        printf("pid 2 {");
+        printf("state: %d, priority: %d}\n", get_pcb_by_pid(2).state, get_pcb_by_pid(2).priority);
+    }
+    if (clock_cycle >= RELEASE_TIME_P3)
+    {
+        printf("pid 3 {");
+        printf("state: %d, priority: %d}\n", get_pcb_by_pid(3).state, get_pcb_by_pid(3).priority);
+    }
     printf("-----------------------------------\n");
 }
 
@@ -470,7 +480,9 @@ void execute_instruction(int pid)
         printf("-----------------------------------\n");
     }
 
+    // increment pc
     change_pcb_pc(pid, p.pc + 1);
+    // check if the program has finished
     if (p.mem_start + p.pc == p.mem_end - 3)
         change_pcb_state(pid, FINISHED);
 }
@@ -503,10 +515,16 @@ void mlfq_sched_exec()
         increment_clk();
 
         // not blocked
-        if (get_pcb_by_pid(pid).state == RUNNING)
+        if (get_pcb_by_pid(pid).state == BLOCKED || get_pcb_by_pid(pid).state == FINISHED)
         {
-            enqueue(&MLQ.q2, pid);
+            return;
         }
+        // change state to ready
+        change_pcb_state(pid, READY);
+        // increment priority
+        change_pcb_priority(pid, 2);
+        // enqueue in q2
+        enqueue(&MLQ.q2, pid);
     }
     else if (MLQ.q2.count > 0)
     {
@@ -520,7 +538,11 @@ void mlfq_sched_exec()
                 return;
             }
         }
-
+        // change state to ready
+        change_pcb_state(pid, READY);
+        // increment priority
+        change_pcb_priority(pid, 3);
+        // enqueue in q3
         enqueue(&MLQ.q3, pid);
     }
     else if (MLQ.q3.count > 0)
@@ -535,8 +557,12 @@ void mlfq_sched_exec()
                 return;
             }
         }
-        enqueue(&MLQ.q4, pid);
+        // change state to ready
+        change_pcb_state(pid, READY);
+        // increment priority
         change_pcb_priority(pid, 4);
+        // enqueue in q4
+        enqueue(&MLQ.q4, pid);
     }
     else if (MLQ.q4.count > 0)
     {
@@ -550,6 +576,9 @@ void mlfq_sched_exec()
                 return;
             }
         }
+        // change state to ready
+        change_pcb_state(pid, READY);
+        // enqueue in q4
         enqueue(&MLQ.q4, pid);
     }
     else
@@ -561,6 +590,14 @@ void mlfq_sched_exec()
 int main()
 {
 
+    // get arrival time of each program from the user
+    printf("Enter the arrival time of each program\n");
+    printf("Program 1: ");
+    scanf("%d", &RELEASE_TIME_P1);
+    printf("Program 2: ");
+    scanf("%d", &RELEASE_TIME_P2);
+    printf("Program 3: ");
+    scanf("%d", &RELEASE_TIME_P3);
     initializeSemaphores();
     Semaphore *s = getSemaphoreByName("userInput");
     increment_clk();
@@ -666,4 +703,22 @@ void display_queue(Queue q)
             q.front = 0;
     }
     printf("\n");
+}
+
+int get_highest_priority_process(Queue *q)
+{
+    int highest_priority = 5;
+    int highest_priority_pid = -1;
+    for (int i = 0; i < (*q).count; i++)
+    {
+        int pid = dequeue(q);
+        enqueue(q, pid);
+        PCB pcb = get_pcb_by_pid(pid);
+        if (pcb.priority < highest_priority)
+        {
+            highest_priority = pcb.priority;
+            highest_priority_pid = pid;
+        }
+    }
+    return highest_priority_pid;
 }
