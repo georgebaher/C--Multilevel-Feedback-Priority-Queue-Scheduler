@@ -326,11 +326,11 @@ void print_blocked_queues()
     display_queue(userInput.blocked_queue);
     printf("]");
     printf(", ");
-    printf("file[");
+    printf("userOutput[");
     display_queue(userOutput.blocked_queue);
     printf("]");
     printf(", ");
-    printf("userOutput[");
+    printf("file[");
     display_queue(file.blocked_queue);
     printf("]");
     printf(", ");
