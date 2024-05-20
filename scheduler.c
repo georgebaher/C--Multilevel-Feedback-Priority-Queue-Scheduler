@@ -11,10 +11,10 @@ typedef struct
     int priority;
     enum
     {
-        READY,
-        RUNNING,
-        BLOCKED,
-        FINISHED
+        READY,   // 0
+        RUNNING, // 1
+        BLOCKED, // 2
+        FINISHED // 3
     } state;
     int pc;
     int mem_start;
@@ -47,6 +47,7 @@ typedef struct
     char resource[25];
     bool busy;
     Queue blocked_queue;
+    int ownerID;
 } Semaphore;
 
 Queue general_blocked_queue = {.front = -1, .rear = -1, .count = 0};
@@ -62,6 +63,7 @@ int get_highest_priority_process(Queue *q);
 
 // global variables
 int RELEASE_TIME_P1, RELEASE_TIME_P2, RELEASE_TIME_P3;
+Queue available_processes = {.front = -1, .rear = -1, .count = 0};
 MemoryWord main_memory[60];
 struct MLQ MLQ = {
     {.front = -1, .rear = -1, .count = 0},
@@ -90,6 +92,28 @@ PCB get_pcb_by_pid(int pid)
             pcb.mem_end = atoi(main_memory[i - 5].data);
             return pcb;
         }
+    }
+}
+
+char *state_to_string(int state)
+{
+    switch (state)
+    {
+    case 0:
+        return "READY";
+        break;
+    case 1:
+        return "RUNNING";
+        break;
+    case 2:
+        return "BLOCKED";
+        break;
+    case 3:
+        return "FINISHED";
+        break;
+    default:
+        return "UNKNOWN";
+        break;
     }
 }
 
@@ -136,18 +160,21 @@ void initializeSemaphores()
     userInput.blocked_queue.front = -1;
     userInput.blocked_queue.rear = -1;
     userInput.blocked_queue.count = 0;
+    userInput.ownerID = -1;
 
     strcpy(userOutput.resource, "userOutput");
     userOutput.busy = 0;
     userOutput.blocked_queue.front = -1;
     userOutput.blocked_queue.rear = -1;
     userOutput.blocked_queue.count = 0;
+    userInput.ownerID = -1;
 
     strcpy(file.resource, "file");
     file.busy = 0;
     file.blocked_queue.front = -1;
     file.blocked_queue.rear = -1;
     file.blocked_queue.count = 0;
+    userInput.ownerID = -1;
 }
 
 void _sem_wait(Semaphore *s, int pid)
@@ -163,42 +190,52 @@ void _sem_wait(Semaphore *s, int pid)
     }
     else
     {
+        // set the process as the owner of the semaphore
+        (*s).ownerID = pid;
         (*s).busy = true;
     }
 }
 
-void _sem_signal(Semaphore *s)
+void _sem_signal(Semaphore *s, int pid)
 {
-    
+    if ((*s).ownerID != pid)
+    {
+        printf("Process %d does not own the semaphore\n", pid);
+        return;
+    }
+
     if ((*s).blocked_queue.count > 0)
     {
-        int pid = get_highest_priority_process(&(*s).blocked_queue);
+        int highest_priority_pid = get_highest_priority_process(&(*s).blocked_queue);
         // remove from general blocked queue
-        dequeue_pid(&general_blocked_queue, pid);
+        dequeue_pid(&general_blocked_queue, highest_priority_pid);
         // remove from semaphore blocked queue
-        dequeue_pid(&(*s).blocked_queue, pid);
+        dequeue_pid(&(*s).blocked_queue, highest_priority_pid);
         // change the state of the process to ready
-        change_pcb_state(pid, READY);
+        change_pcb_state(highest_priority_pid, READY);
         // enqueue the process in the ready queue according to its priority
-        PCB pcb = get_pcb_by_pid(pid);
+        PCB pcb = get_pcb_by_pid(highest_priority_pid);
         switch (pcb.priority)
         {
         case 1:
-            enqueue(&MLQ.q1, pid);
+            enqueue(&MLQ.q1, highest_priority_pid);
             break;
         case 2:
-            enqueue(&MLQ.q2, pid);
+            enqueue(&MLQ.q2, highest_priority_pid);
             break;
         case 3:
-            enqueue(&MLQ.q3, pid);
+            enqueue(&MLQ.q3, highest_priority_pid);
             break;
         case 4:
-            enqueue(&MLQ.q4, pid);
+            enqueue(&MLQ.q4, highest_priority_pid);
             break;
         }
+        // set the process as the owner of the semaphore
+        (*s).ownerID = highest_priority_pid;
         (*s).busy = true;
     }
-    else{
+    else
+    {
         (*s).busy = false;
     }
 }
@@ -258,61 +295,96 @@ int parse_program(char *filename)
     return pcb.pid;
 }
 
+void print_ready_queues()
+{
+    printf("#Ready: ");
+    printf("{");
+    printf("Q1[");
+    display_queue(MLQ.q1);
+    printf("]");
+    printf(", ");
+    printf("Q2[");
+    display_queue(MLQ.q2);
+    printf("]");
+    printf(", ");
+    printf("Q3[");
+    display_queue(MLQ.q3);
+    printf("]");
+    printf(", ");
+    printf("Q4[");
+    display_queue(MLQ.q4);
+    printf("]");
+    printf("}\n");
+}
+
+void print_blocked_queues()
+{
+    printf("#blocked: ");
+    printf("{");
+    printf("userInput[");
+    display_queue(userInput.blocked_queue);
+    printf("]");
+    printf(", ");
+    printf("file[");
+    display_queue(userOutput.blocked_queue);
+    printf("]");
+    printf(", ");
+    printf("userOutput[");
+    display_queue(file.blocked_queue);
+    printf("]");
+    printf(", ");
+    printf("general[");
+    display_queue(general_blocked_queue);
+    printf("]");
+    printf("}\n");
+}
+
+void print_clk_cycle()
+{
+    // print in blue and bold
+    printf("\033[1;34m");
+    printf("------------<Clock cycle %d>------------\n", clock_cycle);
+    printf("\033[0m");
+}
+
+void print_available_processes()
+{
+    printf("#processes: \n");
+    for (int i = 0; i < available_processes.count; i++)
+    {
+        int pid = dequeue(&available_processes);
+        enqueue(&available_processes, pid);
+        printf("  {pid: %d, state: %s, priority: %d}\n", pid, state_to_string(get_pcb_by_pid(pid).state), get_pcb_by_pid(pid).priority);
+    }
+}
+
 void increment_clk()
 {
     clock_cycle++;
     if (clock_cycle == RELEASE_TIME_P1)
     {
         int pid = parse_program("Program_1.txt");
-        // enqueue pcb in ready queue
+        // enqueue pid in available processes
+        enqueue(&available_processes, pid);
+        // enqueue pid in ready queue
         enqueue(&MLQ.q1, pid);
     }
     if (clock_cycle == RELEASE_TIME_P2)
     {
         int pid = parse_program("Program_2.txt");
-        // enqueue pcb in ready queue
+        // enqueue pid in available processes
+        enqueue(&available_processes, pid);
+        // enqueue pid in ready queue
         enqueue(&MLQ.q1, pid);
     }
     if (clock_cycle == RELEASE_TIME_P3)
     {
         int pid = parse_program("Program_3.txt");
-        // enqueue pcb in ready queue
+        // enqueue pid in available processes
+        enqueue(&available_processes, pid);
+        // enqueue pid in ready queue
         enqueue(&MLQ.q1, pid);
     }
-
-    printf("----------Clock cycle<%d>----------\n", clock_cycle);
-    printf("Q1: ");
-    display_queue(MLQ.q1);
-    printf("Q2: ");
-    display_queue(MLQ.q2);
-    printf("Q3: ");
-    display_queue(MLQ.q3);
-    printf("Q4: ");
-    display_queue(MLQ.q4);
-
-    printf("\ngeneral_blocked_queue: ");
-    display_queue(general_blocked_queue);
-    // print semaphore blocked queues
-    printf("userInput_blocked_queue: ");
-    display_queue(userInput.blocked_queue);
-    printf("userOutput_blocked_queue: ");
-    display_queue(userOutput.blocked_queue);
-    printf("file_blocked_queue: ");
-    display_queue(file.blocked_queue);
-    // print state of each process pid 1 2 3
-    printf("\npid 1 {");
-    printf("state: %d, priority: %d}\n", get_pcb_by_pid(1).state, get_pcb_by_pid(1).priority);
-    if (clock_cycle >= RELEASE_TIME_P2)
-    {
-        printf("pid 2 {");
-        printf("state: %d, priority: %d}\n", get_pcb_by_pid(2).state, get_pcb_by_pid(2).priority);
-    }
-    if (clock_cycle >= RELEASE_TIME_P3)
-    {
-        printf("pid 3 {");
-        printf("state: %d, priority: %d}\n", get_pcb_by_pid(3).state, get_pcb_by_pid(3).priority);
-    }
-    printf("-----------------------------------\n");
 }
 
 // function that returns the semaphore based on the resource name
@@ -338,14 +410,20 @@ Semaphore *getSemaphoreByName(char *name)
 
 void execute_instruction(int pid)
 {
+    // print green
+    printf("\033[0;32m");
+    printf("~~~~~~~~~~~~~~Execution~~~~~~~~~~~~~~~~\n");
+    printf("\033[0m");
     PCB p = get_pcb_by_pid(pid);
     if (p.state == READY)
         change_pcb_state(pid, RUNNING);
     // get instruction from memory
     char current_instruction[25];
+    char tmp[25];
     strcpy(current_instruction, main_memory[p.mem_start + p.pc].data);
+    strcpy(tmp, current_instruction);
     char *token = strtok(current_instruction, " ");
-
+    printf("pid_%d executing '%s'\n", pid, tmp);
     if (strcmp(token, "semWait") == 0)
     {
         // get resource name (right of the first space)
@@ -372,7 +450,7 @@ void execute_instruction(int pid)
             return;
         }
         // use the semaphore
-        _sem_signal(mySemaphore);
+        _sem_signal(mySemaphore, pid);
     }
     if (strcmp(token, "assign") == 0)
     {
@@ -395,7 +473,7 @@ void execute_instruction(int pid)
         }
         else
         {
-            printf("P%d/ Enter value for %s: ", pid, variable_name);
+            printf("<pid_%d> Enter value for %s: ", pid, variable_name);
             scanf("%s", variable_value);
         }
 
@@ -428,12 +506,12 @@ void execute_instruction(int pid)
                 to = atoi(main_memory[i].data);
             }
         }
-        printf("------------printFromTo------------\n");
+        printf("<pid_%d> ", pid);
         for (int i = from; i <= to; i++)
         {
-            printf("%d\n", i);
+            printf("%d ", i);
         }
-        printf("----------------------------------\n");
+        printf("\n");
     }
     if (strcmp(token, "writeFile") == 0)
     {
@@ -475,9 +553,8 @@ void execute_instruction(int pid)
                 data = main_memory[i].data;
             }
         }
-        printf("---------------print---------------\n");
+        printf("<pid_%d> ", pid);
         printf("%s\n", data);
-        printf("-----------------------------------\n");
     }
 
     // increment pc
@@ -485,6 +562,10 @@ void execute_instruction(int pid)
     // check if the program has finished
     if (p.mem_start + p.pc == p.mem_end - 3)
         change_pcb_state(pid, FINISHED);
+
+    printf("\033[0;32m");
+    printf("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n");
+    printf("\033[0m");
 }
 
 char *readFromFile(char *filename)
@@ -510,32 +591,74 @@ void mlfq_sched_exec()
 {
     if (MLQ.q1.count > 0)
     {
+
+        print_clk_cycle();
+        printf("At start of clock cycle:\n");
+        print_available_processes();
+        print_ready_queues();
+        print_blocked_queues();
+
         int pid = dequeue(&MLQ.q1);
         execute_instruction(pid);
         increment_clk();
-
-        // not blocked
-        if (get_pcb_by_pid(pid).state == BLOCKED || get_pcb_by_pid(pid).state == FINISHED)
+        if (!(get_pcb_by_pid(pid).state == BLOCKED || get_pcb_by_pid(pid).state == FINISHED))
         {
-            return;
+            // change state to ready
+            change_pcb_state(pid, READY);
+            // increment priority
+            change_pcb_priority(pid, 2);
+            // enqueue in q2
+            enqueue(&MLQ.q2, pid);
         }
-        // change state to ready
-        change_pcb_state(pid, READY);
-        // increment priority
-        change_pcb_priority(pid, 2);
-        // enqueue in q2
-        enqueue(&MLQ.q2, pid);
+        else
+        {
+            // increment priority
+            change_pcb_priority(pid, 2);
+        }
+        printf("At end of clock cycle:\n");
+        print_ready_queues();
+        print_blocked_queues();
+        print_available_processes();
     }
     else if (MLQ.q2.count > 0)
     {
+        print_clk_cycle();
+        printf("At start of clock cycle:\n");
+        print_available_processes();
+        print_ready_queues();
+        print_blocked_queues();
         int pid = dequeue(&MLQ.q2);
         for (int i = 0; i < 2; i++)
         {
+            if (i > 0)
+            {
+                print_clk_cycle();
+                printf("At start of clock cycle:\n");
+                print_available_processes();
+                print_ready_queues();
+                print_blocked_queues();
+            }
             execute_instruction(pid);
             increment_clk();
             if (get_pcb_by_pid(pid).state == BLOCKED || get_pcb_by_pid(pid).state == FINISHED)
             {
+                if (i == 1)
+                {
+                    // increment priority
+                    change_pcb_priority(pid, 3);
+                }
+                printf("At end of clock cycle:\n");
+                print_ready_queues();
+                print_blocked_queues();
+                print_available_processes();
                 return;
+            }
+            if (i < 1)
+            {
+                printf("At end of clock cycle:\n");
+                print_ready_queues();
+                print_blocked_queues();
+                print_available_processes();
             }
         }
         // change state to ready
@@ -544,17 +667,50 @@ void mlfq_sched_exec()
         change_pcb_priority(pid, 3);
         // enqueue in q3
         enqueue(&MLQ.q3, pid);
+        printf("At end of clock cycle:\n");
+        print_ready_queues();
+        print_blocked_queues();
+        print_available_processes();
     }
     else if (MLQ.q3.count > 0)
     {
+        print_clk_cycle();
+        printf("At start of clock cycle:\n");
+        print_available_processes();
+        print_ready_queues();
+        print_blocked_queues();
         int pid = dequeue(&MLQ.q3);
         for (int i = 0; i < 4; i++)
         {
+            if (i > 0)
+            {
+                print_clk_cycle();
+                printf("At start of clock cycle:\n");
+                print_available_processes();
+                print_ready_queues();
+                print_blocked_queues();
+            }
             execute_instruction(pid);
             increment_clk();
             if (get_pcb_by_pid(pid).state == BLOCKED || get_pcb_by_pid(pid).state == FINISHED)
             {
+                if (i == 3)
+                {
+                    // increment priority
+                    change_pcb_priority(pid, 4);
+                }
+                printf("At end of clock cycle:\n");
+                print_ready_queues();
+                print_blocked_queues();
+                print_available_processes();
                 return;
+            }
+            if (i < 3)
+            {
+                printf("At end of clock cycle:\n");
+                print_ready_queues();
+                print_blocked_queues();
+                print_available_processes();
             }
         }
         // change state to ready
@@ -563,23 +719,56 @@ void mlfq_sched_exec()
         change_pcb_priority(pid, 4);
         // enqueue in q4
         enqueue(&MLQ.q4, pid);
+        printf("At end of clock cycle:\n");
+        print_ready_queues();
+        print_blocked_queues();
+        print_available_processes();
     }
     else if (MLQ.q4.count > 0)
     {
+        print_clk_cycle();
+        printf("At start of clock cycle:\n");
+        print_available_processes();
+        print_ready_queues();
+        print_blocked_queues();
         int pid = dequeue(&MLQ.q4);
         for (int i = 0; i < 8; i++)
         {
+            if (i > 0)
+            {
+                print_clk_cycle();
+                printf("At start of clock cycle:\n");
+                print_available_processes();
+                print_ready_queues();
+                print_blocked_queues();
+            }
             execute_instruction(pid);
             increment_clk();
             if (get_pcb_by_pid(pid).state == BLOCKED || get_pcb_by_pid(pid).state == FINISHED)
             {
+                printf("At end of clock cycle:\n");
+                print_ready_queues();
+                print_blocked_queues();
+                print_available_processes();
                 return;
+            }
+
+            if (i < 7)
+            {
+                printf("At end of clock cycle:\n");
+                print_ready_queues();
+                print_blocked_queues();
+                print_available_processes();
             }
         }
         // change state to ready
         change_pcb_state(pid, READY);
         // enqueue in q4
         enqueue(&MLQ.q4, pid);
+        printf("At end of clock cycle:\n");
+        print_ready_queues();
+        print_blocked_queues();
+        print_available_processes();
     }
     else
     {
@@ -605,7 +794,7 @@ int main()
     {
         mlfq_sched_exec();
     }
-    printf("            TERMINATED\n-----------------------------------\n");
+    printf("----------<Simulation finished>---------\n");
     printMainMemory();
     return 0;
 }
@@ -623,7 +812,7 @@ void print_pcb(PCB p)
 
 void printMainMemory()
 {
-    printf("------------Main Memory------------\n");
+    printf("\n------------<Main Memory>------------\n");
     for (int i = 0; i < 60; i++)
     {
         printf("%s: %s\n", main_memory[i].name, main_memory[i].data);
@@ -690,7 +879,7 @@ void display_queue(Queue q)
 {
     if (q.count == 0)
     {
-        printf("Queue is empty\n");
+        printf(" ");
         return;
     }
     bool exit = 0;
@@ -702,7 +891,6 @@ void display_queue(Queue q)
         if (q.front == QUEUE_MAX_SIZE)
             q.front = 0;
     }
-    printf("\n");
 }
 
 int get_highest_priority_process(Queue *q)
