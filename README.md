@@ -56,3 +56,11 @@ The code is organized into the following main components:
 **Semaphore Management:** Processes can wait for and signal semaphores for synchronization.\
 **Priority Adjustment:** Processes are moved between queues based on their behavior and priority.\
 **Termination:** The scheduler terminates when all queues are empty and no processes are left to execute.
+
+## Contribution
+Feel free to fork the repository and submit pull requests. Contributions are welcome!
+
+## Contact
+For any questions or suggestions, please contact me at *@georgeelswefy@gmail.com*
+
+Enjoy exploring how schedulers in OS work with this simulator! *Happy coding! 🚀*
